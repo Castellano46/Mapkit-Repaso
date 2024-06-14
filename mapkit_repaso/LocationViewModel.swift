@@ -11,8 +11,8 @@ import MapKit
 
 final class LocationViewModel: NSObject, ObservableObject {
     private struct DefaultRegion {
-        static let latitude = 9.9333
-        static let longitude = -84.0833
+        static let latitude = 37.7666 
+        static let longitude = -3.9088
     }
     
     private struct Span {
@@ -20,42 +20,105 @@ final class LocationViewModel: NSObject, ObservableObject {
     }
     
     @Published var userHasLocation: Bool = false
+    @Published var userLocation: MKCoordinateRegion = .init(
+        center: CLLocationCoordinate2D(latitude: DefaultRegion.latitude, longitude: DefaultRegion.longitude),
+        span: MKCoordinateSpan(latitudeDelta: Span.delta, longitudeDelta: Span.delta)
+    )
+    @Published var pointsOfInterest: [MKPointAnnotation] = []
     
-    @Published var userLocation: MKCoordinateRegion = .init()
     private let locationManager: CLLocationManager = .init()
     
     override init() {
         super.init()
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
         locationManager.requestWhenInUseAuthorization()
-        locationManager.startUpdatingLocation()
         locationManager.delegate = self
-        userLocation = .init(center: .init(latitude: DefaultRegion.latitude, longitude: DefaultRegion.longitude), span: .init(latitudeDelta: Span.delta, longitudeDelta: Span.delta))
+        locationManager.startUpdatingLocation()
     }
     
-    func checkUserAuthorization() {
-        let status = locationManager.authorizationStatus
-        switch status {
-        case .notDetermined, .restricted, .denied:
-            userHasLocation = false
-        case .authorizedAlways, .authorizedWhenInUse:
-            userHasLocation = true
-        @unknown default:
-            print("Unhandled state")
+    private func updateAuthorizationStatus(status: CLAuthorizationStatus) {
+        DispatchQueue.main.async {
+            switch status {
+            case .notDetermined, .restricted, .denied:
+                self.userHasLocation = false
+            case .authorizedAlways, .authorizedWhenInUse:
+                self.userHasLocation = true
+            @unknown default:
+                print("Unhandled state")
+            }
+        }
+    }
+
+    private func updateUserLocation(location: CLLocation) {
+        DispatchQueue.main.async {
+            self.userLocation = MKCoordinateRegion(
+                center: location.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: Span.delta, longitudeDelta: Span.delta)
+            )
+        }
+    }
+
+    func searchLocation(query: String) {
+        let searchRequest = MKLocalSearch.Request()
+        searchRequest.naturalLanguageQuery = query
+
+        let search = MKLocalSearch(request: searchRequest)
+        search.start { (response, error) in
+            guard let response = response else {
+                print("Error: \(String(describing: error))")
+                return
+            }
+            
+            if let item = response.mapItems.first {
+                let coordinate = item.placemark.coordinate
+                DispatchQueue.main.async {
+                    self.userLocation = MKCoordinateRegion(
+                        center: coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: Span.delta, longitudeDelta: Span.delta)
+                    )
+                }
+            }
         }
     }
     
+    func searchPointsOfInterest() {
+        let searchRequest = MKLocalSearch.Request()
+        searchRequest.naturalLanguageQuery = "restaurant"
+        searchRequest.region = userLocation
+        
+        let search = MKLocalSearch(request: searchRequest)
+        search.start { (response, error) in
+            guard let response = response else {
+                print("Error: \(String(describing: error))")
+                return
+            }
+            
+            let annotations = response.mapItems.map { item -> MKPointAnnotation in
+                let annotation = MKPointAnnotation()
+                annotation.coordinate = item.placemark.coordinate
+                annotation.title = item.name
+                annotation.subtitle = item.placemark.title
+                return annotation
+            }
+            
+            DispatchQueue.main.async {
+                self.pointsOfInterest = annotations
+            }
+        }
+    }
 }
 
 extension LocationViewModel: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         print("Location \(location)")
-        userLocation = .init(center: location.coordinate, span: .init(latitudeDelta: Span.delta, longitudeDelta: Span.delta))
+        updateUserLocation(location: location)
+        searchPointsOfInterest()
     }
     
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        checkUserAuthorization()
+        let status = manager.authorizationStatus
+        updateAuthorizationStatus(status: status)
     }
-    
 }
+
